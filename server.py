@@ -1,6 +1,6 @@
+import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-import uvicorn
 import paho.mqtt.client as mqtt
 import json
 from datetime import datetime
@@ -86,6 +86,10 @@ def setup_mqtt():
     print("MQTT подключён к broker.emqx.io")
     print("Ожидание данных от ESP32...")
 
+@app.on_event("startup")
+async def startup_event():
+    setup_mqtt()
+
 @app.get("/")
 async def root():
     return {
@@ -138,13 +142,12 @@ async def test_color():
     return {"status": "ok", "color": latest_color}
 
 if __name__ == "__main__":
+    import uvicorn
     setup_mqtt()
     
     print("=" * 40)
     print("СЕРВЕР ЗАПУЩЕН!")
     print("=" * 40)
-    print("Откройте http://localhost:8000/color")
-    print("Чтобы проверить вручную: http://localhost:8000/test-color")
-    print("=" * 40)
     
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
