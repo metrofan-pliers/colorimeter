@@ -32,17 +32,55 @@ class ColorData {
     final r = json['r'] ?? 0;
     final g = json['g'] ?? 0;
     final b = json['b'] ?? 0;
+    
+    final h = json['hsv']?['h'] ?? 0;
+    final s = json['hsv']?['s'] ?? 0;
+    final v = json['hsv']?['v'] ?? 0;
 
     return ColorData(
       r: r,
       g: g,
       b: b,
       hex: json['hex'] ?? '#000000',
-      hsv: json['hsv'] ?? {'h': 0, 's': 0, 'v': 0},
+      hsv: json['hsv'] ?? {'h': h, 's': s, 'v': v},
       cmyk: ColorData.rgbToCmyk(r, g, b),
       timestamp: json['timestamp'],
-      colorName: json['colorName'],
+      colorName: json['colorName'] ?? detectColorName(r, g, b, h, s, v),
     );
+  }
+
+  static String detectColorName(int r, int g, int b, int h, int s, int v) {
+    final sNorm = s / 100;
+    final vNorm = v / 100;
+
+    if (vNorm < 0.10) return 'black';
+
+    if (sNorm < 0.18) {
+      if (vNorm > 0.80) return 'white';
+      if (vNorm > 0.25) return 'gray';
+      return 'black';
+    }
+
+    if (sNorm < 0.4 && vNorm > 0.4) {
+      if (h >= 20 && h < 50) return 'beige';
+      if (h >= 320 || h < 20) return 'pink';
+    }
+
+    if (h < 40 && vNorm < 0.20 && sNorm > 0.25) return 'brown';
+    if (h >= 30 && h < 55) return 'yellow';
+    if (h >= 5 && h < 25 && vNorm >= 0.35) return 'orange';
+    
+    if (h >= 0 && h < 15) return 'red';
+    if (h >= 345 && h < 360) return 'red';
+    if (h >= 15 && h < 45) return 'orange';
+    if (h >= 45 && h < 75) return 'yellow';
+    if (h >= 75 && h < 150) return 'green';
+    if (h >= 150 && h < 195) return 'cyan';
+    if (h >= 195 && h < 255) return 'blue';
+    if (h >= 255 && h < 285) return 'purple';
+    if (h >= 285 && h < 345) return 'magenta';
+
+    return 'unknown';
   }
 
   static Map<String, int> rgbToCmyk(int r, int g, int b) {
