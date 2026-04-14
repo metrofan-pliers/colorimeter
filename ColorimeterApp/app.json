@@ -1,0 +1,22 @@
+{
+  "expo": {
+    "name": "Colorimeter",
+    "slug": "colorimeter-app",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "splash": {
+      "backgroundColor": "#000000"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.colorimeter.app"
+    },
+    "android": {
+      "package": "com.colorimeter.app"
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    }
+  }
+}
