@@ -4,11 +4,22 @@
 #include <Adafruit_SSD1306.h>
 #include <DFRobotDFPlayerMini.h>
 #include <math.h>
+#include <WiFi.h>
+#include <PubSubClient.h>
 
 #define SCREEN_WIDTH 128
 #define SCREEN_HEIGHT 64
 #define BUTTON_PIN 32
 #define LED_PIN 27
+
+// ============== WIFI НАСТРОЙКИ ==============
+const char* WIFI_SSID = "YOUR_WIFI_NAME";
+const char* WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";
+
+// ============== MQTT НАСТРОЙКИ ==============
+const char* MQTT_SERVER = "broker.emqx.io";
+const int MQTT_PORT = 1883;
+const char* MQTT_TOPIC = "colorimeter/reading";
 
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 Adafruit_TCS34725 tcs(TCS34725_INTEGRATIONTIME_154MS, TCS34725_GAIN_60X);
@@ -16,19 +27,76 @@ Adafruit_TCS34725 tcs(TCS34725_INTEGRATIONTIME_154MS, TCS34725_GAIN_60X);
 HardwareSerial dfSerial(2);
 DFRobotDFPlayerMini dfplayer;
 
+WiFiClient espClient;
+PubSubClient mqttClient(espClient);
 
 bool lastButtonState = false;
 String lastColor = "none";
 unsigned long lastSpeakTime = 0;
+unsigned long lastMqttTime = 0;
 
 float Kr = 1.0;
 float Kg = 1.0;
 float Kb = 1.0;
-float cWhite = 5000.0; // значение по умолчанию
+float cWhite = 5000.0;
 uint8_t imageBuffer[35000];
 
-// Глобальные цвета для BMP и OLED
 int R = 0, G = 0, B = 0;
+
+// ============== MQTT ФУНКЦИИ ==============
+void reconnectMQTT() {
+    while (!mqttClient.connected()) {
+        Serial.print("Connecting to MQTT...");
+        String clientId = "ESP32-Colorimeter-" + String(random(9999));
+        if (mqttClient.connect(clientId.c_str())) {
+            Serial.println("connected");
+        } else {
+            Serial.print("failed, rc=");
+            Serial.print(mqttClient.state());
+            Serial.println(" try again in 5 seconds");
+            delay(5000);
+        }
+    }
+}
+
+void sendToMQTT(int r, int g, int b) {
+    if (!mqttClient.connected()) {
+        reconnectMQTT();
+    }
+    
+    char json[100];
+    sprintf(json, "{\"r\":%d,\"g\":%d,\"b\":%d}", r, g, b);
+    
+    mqttClient.publish(MQTT_TOPIC, json);
+    Serial.printf("MQTT sent: %s\n", json);
+}
+
+// ============== WIFI ФУНКЦИИ ==============
+void setupWiFi() {
+    delay(10);
+    Serial.println();
+    Serial.print("Connecting to ");
+    Serial.println(WIFI_SSID);
+    
+    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+    
+    int attempts = 0;
+    while (WiFi.status() != WL_CONNECTED && attempts < 30) {
+        delay(500);
+        Serial.print(".");
+        attempts++;
+    }
+    
+    if (WiFi.status() == WL_CONNECTED) {
+        Serial.println("");
+        Serial.println("WiFi connected");
+        Serial.println("IP address: ");
+        Serial.println(WiFi.localIP());
+    } else {
+        Serial.println("");
+        Serial.println("WiFi FAILED to connect");
+    }
+}
 
 void rgbToHSV(float r, float g, float b, float &h, float &s, float &v) {
     float maxVal = max(r, max(g, b));
@@ -60,44 +128,35 @@ void rgbToHSV(float r, float g, float b, float &h, float &s, float &v) {
     if (h < 0) h += 360;
 }
 
-
-// ---------------- ФУНКЦИИ ----------------
 String detectColor(float r, float g, float b, float vReal) {
     float h, s, v;
     rgbToHSV(r, g, b, h, s, v);
 
     Serial.printf("HSV H:%.0f S:%.2f Vreal:%.2f\n", h, s, vReal);
 
-    // --- 1. ЧЁРНЫЙ ---
     if (vReal < 0.10)
         return "black";
 
-    // --- 2. БЕЛЫЙ / СЕРЫЙ ---
     if (s < 0.18) {
         if (vReal > 0.80) return "white";
         if (vReal > 0.25) return "gray";
         return "black";
     }
 
-    // --- 4. ПАСТЕЛЬ ---
     if (s < 0.4 && vReal > 0.4) {
         if (h >= 20 && h < 50) return "beige";
         if (h >= 320 || h < 20) return "pink";
     }
 
-    // --- КОРИЧНЕВЫЙ (тёмный оранжевый) ---
     if (h < 40 && vReal < 0.20 && s > 0.25)
         return "brown";
 
-    // --- ЖЁЛТЫЙ ---
     if (h >= 30 && h < 55)
         return "yellow";
 
-    // --- ОРАНЖЕВЫЙ ---
     if (h >= 5 && h < 25 && vReal >= 0.35)
         return "orange";
 
-    // --- 5. ВСЕ ОСНОВНЫЕ ЦВЕТА (ПОЛНОСТЬЮ) ---
     if (h < 10 || h >= 350) return "red";
     if (h > 55 && h < 85) return "lime";
     if (h > 85 && h < 150) return "green";
@@ -170,26 +229,14 @@ String rgbToHex(int r, int g, int b) {
     return String(hexCol);
 }
 
-void rgbToCmyk(int r, int g, int b, int &c, int &m, int &y, int &k) {
-    float rf = r / 255.0;
-    float gf = g / 255.0;
-    float bf = b / 255.0;
-
-    k = 1 - max(rf, max(gf, bf));
-    if (k == 1) {
-        c = m = y = 0;
-        return;
-    }
-
-    c = (1 - rf - k) / (1 - k) * 100;
-    m = (1 - gf - k) / (1 - k) * 100;
-    y = (1 - bf - k) / (1 - k) * 100;
-    k *= 100;
-}
-
-
 void calibrateWhite() {
     Serial.println("Put WHITE object and wait...");
+    display.clearDisplay();
+    display.setTextColor(SSD1306_WHITE);
+    display.setTextSize(1);
+    display.setCursor(0, 0);
+    display.println("Calibrating...");
+    display.display();
     delay(3000);
 
     uint32_t rSum=0, gSum=0, bSum=0, cSum=0;
@@ -221,7 +268,6 @@ void calibrateWhite() {
     Serial.println("White calibration done");
 }
 
-// ---------------- SETUP ----------------
 void setup() {
     Serial.begin(115200);
     Wire.begin(21, 22);
@@ -230,6 +276,10 @@ void setup() {
     pinMode(LED_PIN, OUTPUT);
     digitalWrite(LED_PIN, LOW);
 
+    // ============== WIFI И MQTT ==============
+    setupWiFi();
+    mqttClient.setServer(MQTT_SERVER, MQTT_PORT);
+    
     if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
         Serial.println("OLED not found");
         while (1);
@@ -247,19 +297,15 @@ void setup() {
         while(true);
     }
 
-    
     display.clearDisplay();
     display.setTextColor(SSD1306_INVERSE);
     display.setTextSize(2);
     display.setCursor(0,0);
-    display.println("Put white object");
-    display.println("and press button");
+    display.println("Put white");
+    display.println("press btn");
     display.display();
 
-    // ждём нажатие
     while(digitalRead(BUTTON_PIN) == HIGH) delay(10);
-
-    // ждём отпускание
     while(digitalRead(BUTTON_PIN) == LOW) delay(10);
 
     calibrateWhite();
@@ -268,16 +314,11 @@ void setup() {
     display.setTextColor(SSD1306_WHITE);
     display.setTextSize(2);
     display.setCursor(0, 20);
-    display.println("calibrated");
-    display.setTextSize(1);
-    display.setCursor(0, 40);
-    display.print("cWhite: ");
-    display.println((int)cWhite);
+    display.println("Ready!");
     display.display();
 
     delay(1500);
 
-    // сбрасываем состояние кнопки
     lastButtonState = false;
 }
 
@@ -289,17 +330,23 @@ void loop() {
 
     if(!buttonPressed || lastButtonState){
         lastButtonState = buttonPressed;
+        
+        // MQTT loop
+        if (!mqttClient.connected()) {
+            reconnectMQTT();
+        }
+        mqttClient.loop();
+        
         return;
     }
-    delay(50); // антидребезг
+    delay(50);
     lastButtonState = buttonPressed;
 
-    // -------------------- Усреднение RAW --------------------
     uint32_t rSum = 0, gSum = 0, bSum = 0, cSum = 0;
     float r, g, b;
     float rN, gN, bN;
 
-    const int N = 3; // количество измерений для усреднения
+    const int N = 3;
     digitalWrite(LED_PIN, HIGH);
     delay(20);
     for(int i=0; i<N; i++){
@@ -313,18 +360,15 @@ void loop() {
     }
     digitalWrite(LED_PIN, LOW);
 
-    // Средние значения
     r = rSum / (float)N;
     g = gSum / (float)N;
     b = bSum / (float)N;
     float c = cSum / (float)N;
 
-    // -------------------- Нормализация по белому --------------------
     rN = (c > 0) ? (r / c) * Kr : 0;
     gN = (c > 0) ? (g / c) * Kg : 0;
     bN = (c > 0) ? (b / c) * Kb : 0;
 
-    // нормализация по максимуму (ВАЖНО)
     float maxRGB = max(rN, max(gN, bN));
     if (maxRGB > 0) {
         rN /= maxRGB;
@@ -335,23 +379,16 @@ void loop() {
     float vReal = c / cWhite;
     if (vReal > 1.0) vReal = 1.0;
 
-    // --- ЧЁРНЫЙ по реальной яркости ---
     String colorName;
-
     float rHSV = (c > 0) ? (r / c) * Kr : 0;
     float gHSV = (c > 0) ? (g / c) * Kg : 0;
     float bHSV = (c > 0) ? (b / c) * Kb : 0;
     rgbToHSV(rN, gN, bN, h, s, v);
     
     colorName = detectColor(rHSV, gHSV, bHSV, vReal);
-    Serial.printf("DEBUG RGBn: %.2f %.2f %.2f | C: %.0f | vReal: %.2f\n",
-              rN, gN, bN, c, vReal);
-
     Serial.printf("FINAL: %s\n", colorName.c_str());
 
-    // -------------------- Гамма и яркость для OLED --------------------
     float brightness = vReal; 
-
     R = gammaCorrect(rN * brightness);
     G = gammaCorrect(gN * brightness);
     B = gammaCorrect(bN * brightness);
@@ -359,6 +396,13 @@ void loop() {
     String hexColor = rgbToHex(R, G, B);
 
     unsigned long now = millis();
+    
+    // ============== ОТПРАВКА В MQTT ==============
+    if(now - lastMqttTime > 1000) {
+        sendToMQTT(R, G, B);
+        lastMqttTime = now;
+    }
+    
     if(now - lastSpeakTime > 500){
         int track = colorToTrack(colorName);
         if(track>0) dfplayer.play(track);
@@ -369,15 +413,12 @@ void loop() {
         display.clearDisplay();
 
         display.setTextSize(1);
-
         display.setCursor(0, 55);
         display.printf("H:%3.0f", h);
-
         display.setCursor(40, 55);
-        display.printf("S:%.2f", s*100);
-
+        display.printf("S:%.0f", s*100);
         display.setCursor(90, 55);
-        display.printf("V:%.2f", vReal*100);
+        display.printf("V:%.0f", vReal*100);
 
         display.setTextColor(SSD1306_WHITE);
         display.setTextSize(2.7);
@@ -398,6 +439,5 @@ void loop() {
         lastSpeakTime=now;
     }
 
-    Serial.printf("RAW R:%.0f G:%.0f B:%.0f C:%.0f | NORM %.2f %.2f %.2f | %s\n",
-        r,g,b,c,rN,gN,bN,colorName.c_str());
+    Serial.printf("RAW R:%.0f G:%.0f B:%.0f | %s\n", r,g,b,colorName.c_str());
 }
