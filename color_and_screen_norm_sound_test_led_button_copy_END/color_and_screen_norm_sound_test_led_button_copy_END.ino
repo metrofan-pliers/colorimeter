@@ -13,8 +13,8 @@
 #define LED_PIN 27
 
 // ============== WIFI НАСТРОЙКИ ==============
-const char* WIFI_SSID = "YOUR_WIFI_NAME";
-const char* WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";
+const char* WIFI_SSID = "Pixel_9889";
+const char* WIFI_PASSWORD = "88888888";
 
 // ============== MQTT НАСТРОЙКИ ==============
 const char* MQTT_SERVER = "broker.emqx.io";
